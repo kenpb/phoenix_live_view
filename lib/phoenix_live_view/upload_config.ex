@@ -52,6 +52,7 @@ defmodule Phoenix.LiveView.UploadConfig do
   alias Phoenix.LiveView.UploadConfig
   alias Phoenix.LiveView.UploadEntry
 
+  @default_min_entries 0
   @default_max_entries 1
   @default_max_file_size 8_000_000
   @default_chunk_size 64_000
@@ -60,6 +61,7 @@ defmodule Phoenix.LiveView.UploadConfig do
   @unregistered :unregistered
   @invalid :invalid
 
+  @more_files_required :more_files_required
   @too_many_files :too_many_files
 
   if Version.match?(System.version(), ">= 1.8.0") do
@@ -80,6 +82,7 @@ defmodule Phoenix.LiveView.UploadConfig do
   defstruct name: nil,
             cid: :unregistered,
             client_key: nil,
+            min_entries: @default_min_entries,
             max_entries: @default_max_entries,
             max_file_size: @default_max_file_size,
             chunk_size: @default_chunk_size,
@@ -102,6 +105,7 @@ defmodule Phoenix.LiveView.UploadConfig do
           # a nil cid represents a LiveView socket
           cid: :unregistered | nil | integer(),
           client_key: String.t(),
+          min_entries: pos_integer(),
           max_entries: pos_integer(),
           max_file_size: pos_integer(),
           entries: list(),
@@ -128,7 +132,7 @@ defmodule Phoenix.LiveView.UploadConfig do
   # we require a random_ref in order to ensure unique calls to `allow_upload`
   # invalidate old uploads on the client and expire old tokens for the same
   # upload name
-  def build(name, random_ref, [_ | _] = opts) when is_atom(name) do
+  def build(name, random_ref, [_ | _] = opts) when is_atom(name) or is_binary(name) do
     {html_accept, acceptable_types, acceptable_exts} =
       case Keyword.fetch(opts, :accept) do
         {:ok, [_ | _] = accept} ->
@@ -178,6 +182,24 @@ defmodule Phoenix.LiveView.UploadConfig do
 
         :error ->
           false
+      end
+
+    min_entries =
+      case Keyword.fetch(opts, :min_entries) do
+        {:ok, pos_integer} when is_integer(pos_integer) and pos_integer > 0 ->
+          pos_integer
+
+        {:ok, other} ->
+          raise ArgumentError, """
+          invalid :min_entries value provided to allow_upload.
+
+          Only a positive integer is supported (Defaults to #{@default_min_entries}). Got:
+
+          #{inspect(other)}
+          """
+
+        :error ->
+          @default_min_entries
       end
 
     max_entries =
@@ -275,6 +297,7 @@ defmodule Phoenix.LiveView.UploadConfig do
     %UploadConfig{
       ref: random_ref,
       name: name,
+      min_entries: min_entries,
       max_entries: max_entries,
       max_file_size: max_file_size,
       entry_refs_to_pids: %{},
@@ -287,7 +310,11 @@ defmodule Phoenix.LiveView.UploadConfig do
       chunk_timeout: chunk_timeout,
       progress_event: progress_event,
       auto_upload?: Keyword.get(opts, :auto_upload, false),
-      allowed?: true
+      allowed?: true,
+      errors: case min_entries > 0 do
+        true -> [{random_ref, @more_files_required}]
+        _ -> []
+      end
     }
   end
 
@@ -483,16 +510,21 @@ defmodule Phoenix.LiveView.UploadConfig do
         end
       end)
 
-    if too_many_files?(new_conf) do
-      {:error, put_error(new_conf, new_conf.ref, @too_many_files)}
-    else
-      case new_conf do
-        %UploadConfig{errors: []} = new_conf ->
-          {:ok, new_conf}
+    cond do
+      too_many_files?(new_conf) ->
+        {:error, put_error(new_conf, new_conf.ref, @too_many_files)}
 
-        %UploadConfig{errors: [_ | _]} = new_conf ->
-          {:error, new_conf}
-      end
+      more_files_required?(new_conf) ->
+        {:error, put_error(new_conf, new_conf.ref, @more_files_required)}
+
+      true ->
+        case new_conf do
+          %UploadConfig{errors: []} = new_conf ->
+            {:ok, new_conf}
+
+          %UploadConfig{errors: [_ | _]} = new_conf ->
+            {:error, recalculate_computed_fields(new_conf)}
+        end
     end
   end
 
@@ -507,6 +539,10 @@ defmodule Phoenix.LiveView.UploadConfig do
 
   defp maybe_replace_sole_entry(%UploadConfig{} = conf, _new_entries) do
     conf
+  end
+
+  defp more_files_required?(%UploadConfig{entries: entries, min_entries: min}) do
+    length(entries) < min
   end
 
   defp too_many_files?(%UploadConfig{entries: entries, max_entries: max}) do
@@ -607,21 +643,30 @@ defmodule Phoenix.LiveView.UploadConfig do
   end
 
   defp recalculate_errors(%UploadConfig{ref: ref} = conf) do
-    if too_many_files?(conf) do
-      conf
-    else
-      new_errors =
-        Enum.filter(conf.errors, fn
-          {^ref, @too_many_files} -> false
-          _ -> true
-        end)
+    cond do
+      too_many_files?(conf) -> conf
 
-      %UploadConfig{conf | errors: new_errors}
+      more_files_required?(conf) -> put_error(conf, conf.ref, @more_files_required)
+
+      true ->
+        new_errors =
+          Enum.filter(conf.errors, fn
+            {^ref, @too_many_files} -> false
+            {^ref, @more_files_required} -> false
+            _ -> true
+          end)
+
+        %UploadConfig{conf | errors: new_errors}
     end
   end
 
   @doc false
   def put_error(%UploadConfig{} = conf, _entry_ref, @too_many_files = reason) do
+    %UploadConfig{conf | errors: Enum.uniq(conf.errors ++ [{conf.ref, reason}])}
+  end
+
+  @doc false
+  def put_error(%UploadConfig{} = conf, _entry_ref, @more_files_required = reason) do
     %UploadConfig{conf | errors: Enum.uniq(conf.errors ++ [{conf.ref, reason}])}
   end
 

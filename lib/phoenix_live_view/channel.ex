@@ -157,6 +157,34 @@ defmodule Phoenix.LiveView.Channel do
     {:noreply, new_state}
   end
 
+  def handle_info(%Message{topic: topic, event: "check_upload"} = msg, %{topic: topic} = state) do
+    %{"ref" => upload_ref} = payload = msg.payload
+    cid = payload["cid"]
+
+    new_state =
+      write_socket(state, cid, msg.ref, fn socket, _ ->
+        conf = Upload.get_upload_by_ref!(socket, upload_ref)
+        ensure_unique_upload_name!(state, conf)
+
+        {socket,
+         {:ok,
+          {msg.ref,
+           %{
+             ref: upload_ref,
+             error:
+               case Enum.empty?(conf.errors) do
+                 true ->
+                   nil
+
+                 false ->
+                   Enum.map(conf.errors, &Tuple.to_list/1)
+               end
+           }}, state}}
+      end)
+
+    {:noreply, new_state}
+  end
+
   def handle_info(%Message{topic: topic, event: "allow_upload"} = msg, %{topic: topic} = state) do
     %{"ref" => upload_ref, "entries" => entries} = payload = msg.payload
     cid = payload["cid"]

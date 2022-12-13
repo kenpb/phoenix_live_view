@@ -857,6 +857,9 @@ defmodule Phoenix.LiveView do
     * `:accept` - Required. A list of unique file type specifiers or the
       atom :any to allow any kind of file. For example, `[".jpeg"]`, `:any`, etc.
 
+    * `:min_entries` - The minimum number of selected files to need per
+      file input. Defaults to 0.
+
     * `:max_entries` - The maximum number of selected files to allow per
       file input. Defaults to 1.
 

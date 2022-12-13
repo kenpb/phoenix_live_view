@@ -858,66 +858,103 @@ export default class View {
     })
   }
 
-  pushFormSubmit(formEl, targetCtx, phxEvent, opts, onReply){
-    let filterIgnored = el => {
-      let userIgnored = closestPhxBinding(el, `${this.binding(PHX_UPDATE)}=ignore`, el.form)
+  pushFormSubmit(formEl, targetCtx, phxEvent, opts, onReply) {
+    const filterIgnored = el => {
+      const userIgnored = closestPhxBinding(el, `${this.binding(PHX_UPDATE)}=ignore`, el.form)
       return !(userIgnored || closestPhxBinding(el, "data-phx-update=ignore", el.form))
     }
-    let filterDisables = el => {
+    const filterDisables = el => {
       return el.hasAttribute(this.binding(PHX_DISABLE_WITH))
     }
-    let filterButton = el => el.tagName == "BUTTON"
-
-    let filterInput = el => ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)
-
-    let refGenerator = () => {
-      let formElements = Array.from(formEl.elements)
-      let disables = formElements.filter(filterDisables)
-      let buttons = formElements.filter(filterButton).filter(filterIgnored)
-      let inputs = formElements.filter(filterInput).filter(filterIgnored)
+    const filterButton = el => el.tagName == "BUTTON"
+    const filterInput = el => ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)
+    const refGenerator = () => {
+      const formElements = Array.from(formEl.elements)
+      const disables = formElements.filter(filterDisables)
+      const buttons = formElements.filter(filterButton).filter(filterIgnored)
+      const inputs = formElements.filter(filterInput).filter(filterIgnored)
 
       buttons.forEach(button => {
         button.setAttribute(PHX_DISABLED, button.disabled)
         button.disabled = true
       })
+
       inputs.forEach(input => {
         input.setAttribute(PHX_READONLY, input.readOnly)
         input.readOnly = true
-        if(input.files){
+        if (input.files) {
           input.setAttribute(PHX_DISABLED, input.disabled)
           input.disabled = true
         }
       })
+
       formEl.setAttribute(this.binding(PHX_PAGE_LOADING), "")
+
       return this.putRef([formEl].concat(disables).concat(buttons).concat(inputs), "submit", opts)
     }
 
-    let cid = this.targetComponentID(formEl, targetCtx)
-    if(LiveUploader.hasUploadsInProgress(formEl)){
-      let [ref, _els] = refGenerator()
-      let push = () => this.pushFormSubmit(formEl, targetCtx, phxEvent, opts, onReply)
-      return this.scheduleSubmit(formEl, ref, opts, push)
-    } else if(LiveUploader.inputsAwaitingPreflight(formEl).length > 0){
-      let [ref, els] = refGenerator()
-      let proxyRefGen = () => [ref, els, opts]
-      this.uploadFiles(formEl, targetCtx, ref, cid, (_uploads) => {
-        let formData = serializeForm(formEl, {})
-        this.pushWithReply(proxyRefGen, "event", {
+    const fileInputs = dom_default.findUploadInputs(formEl)
+    const cid = this.targetComponentID(formEl, targetCtx)
+
+    Promise.all(fileInputs.map(inputEl => {
+      const payload = {
+        ref: inputEl.getAttribute(PHX_UPLOAD_REF),
+        entries: [],
+        cid: this.targetComponentID(inputEl.form, targetCtx),
+      }
+
+      return new Promise((resolve, reject) => {
+        this.pushWithReply(null, "check_upload", payload, resp => {
+          const { error, entry_ref } = resp
+
+          this.log("push", () => ["got status response", resp])
+
+          this.undoRefs(entry_ref)
+
+          if (error)
+            reject(error)
+          else
+            resolve()
+        })
+      })
+    }))
+    .then(() => {
+      if (LiveUploader.hasUploadsInProgress(formEl)) {
+        const [ref, _els] = refGenerator()
+
+        const push = () => this.pushFormSubmit(formEl, targetCtx, phxEvent, opts, onReply)
+
+        return this.scheduleSubmit(formEl, ref, opts, push)
+      } else if (LiveUploader.inputsAwaitingPreflight(formEl).length > 0) {
+        const [ref, els] = refGenerator()
+        const proxyRefGen = () => [ref, els, opts]
+
+        this.uploadFiles(formEl, targetCtx, ref, cid, (_uploads) => {
+          const formData = serializeForm(formEl, {})
+
+          this.pushWithReply(proxyRefGen, "event", {
+            type: "form",
+            event: phxEvent,
+            value: formData,
+            cid,
+          }, onReply)
+        })
+      } else {
+        const formData = serializeForm(formEl)
+
+        this.pushWithReply(refGenerator, "event", {
           type: "form",
           event: phxEvent,
           value: formData,
-          cid: cid
+          cid,
         }, onReply)
-      })
-    } else {
-      let formData = serializeForm(formEl)
-      this.pushWithReply(refGenerator, "event", {
-        type: "form",
-        event: phxEvent,
-        value: formData,
-        cid: cid
-      }, onReply)
-    }
+      }
+    })
+    .catch(error => {
+      const [entry_ref, reason] = error
+
+      this.log("push", () => [`error for entry ${entry_ref}`, reason])
+    })
   }
 
   uploadFiles(formEl, targetCtx, ref, cid, onComplete){
