@@ -893,7 +893,7 @@ export default class View {
       return this.putRef([formEl].concat(disables).concat(buttons).concat(inputs), "submit", opts)
     }
 
-    const fileInputs = dom_default.findUploadInputs(formEl)
+    const fileInputs = DOM.findUploadInputs(formEl)
     const cid = this.targetComponentID(formEl, targetCtx)
 
     Promise.all(fileInputs.map(inputEl => {
